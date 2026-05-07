@@ -65,19 +65,20 @@ router.post('/', auth, authorize('admin'), async (req, res) => {
       return res.status(400).json({ message: 'Correct answer must be A, B, C, or D' });
     }
 
-    // Each option must have at least text or image
-    const optionPairs = [
-      [option_a_text, option_a_image],
-      [option_b_text, option_b_image],
-      [option_c_text, option_c_image],
-      [option_d_text, option_d_image]
-    ];
-    const letters = ['A', 'B', 'C', 'D'];
-    for (let i = 0; i < optionPairs.length; i++) {
-      const [txt, img] = optionPairs[i];
-      if (!txt?.trim() && !img?.trim()) {
-        return res.status(400).json({ message: `Option ${letters[i]} must have text or image` });
-      }
+    // At least one option must have text or image, and the correct answer option must have content
+    const optionMap = {
+      A: [option_a_text, option_a_image],
+      B: [option_b_text, option_b_image],
+      C: [option_c_text, option_c_image],
+      D: [option_d_text, option_d_image]
+    };
+    const hasAtLeastOne = Object.values(optionMap).some(([txt, img]) => txt?.trim() || img?.trim());
+    if (!hasAtLeastOne) {
+      return res.status(400).json({ message: 'At least one option must have text or image' });
+    }
+    const [correctTxt, correctImg] = optionMap[correct_answer];
+    if (!correctTxt?.trim() && !correctImg?.trim()) {
+      return res.status(400).json({ message: `The correct answer option (${correct_answer}) must have text or image` });
     }
 
     const [result] = await pool.execute(
