@@ -40,16 +40,21 @@ router.get('/workshop/:workshopId', auth, async (req, res) => {
  */
 router.post('/', auth, authorize('admin'), async (req, res) => {
   try {
-    const { 
-      workshop_id, 
-      question, 
-      option_a_image, 
-      option_b_image, 
-      option_c_image, 
-      option_d_image, 
-      correct_answer, 
-      points, 
-      order_index 
+    const {
+      workshop_id,
+      question,
+      question_image,
+      option_a_text,
+      option_b_text,
+      option_c_text,
+      option_d_text,
+      option_a_image,
+      option_b_image,
+      option_c_image,
+      option_d_image,
+      correct_answer,
+      points,
+      order_index
     } = req.body;
 
     if (!workshop_id || !question || !correct_answer) {
@@ -60,27 +65,42 @@ router.post('/', auth, authorize('admin'), async (req, res) => {
       return res.status(400).json({ message: 'Correct answer must be A, B, C, or D' });
     }
 
-    // Validate that all four options have images
-    const options = [option_a_image, option_b_image, option_c_image, option_d_image];
-    const validOptions = options.filter(option => option && option.trim());
-    
-    if (validOptions.length < 4) {
-      return res.status(400).json({ message: 'All four options (A, B, C, D) must have images' });
+    // Each option must have at least text or image
+    const optionPairs = [
+      [option_a_text, option_a_image],
+      [option_b_text, option_b_image],
+      [option_c_text, option_c_image],
+      [option_d_text, option_d_image]
+    ];
+    const letters = ['A', 'B', 'C', 'D'];
+    for (let i = 0; i < optionPairs.length; i++) {
+      const [txt, img] = optionPairs[i];
+      if (!txt?.trim() && !img?.trim()) {
+        return res.status(400).json({ message: `Option ${letters[i]} must have text or image` });
+      }
     }
 
     const [result] = await pool.execute(
-      `INSERT INTO workshop_questions 
-       (workshop_id, question, option_a_image, option_b_image, option_c_image, option_d_image, correct_answer, points, order_index) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO workshop_questions
+       (workshop_id, question, question_image,
+        option_a_text, option_b_text, option_c_text, option_d_text,
+        option_a_image, option_b_image, option_c_image, option_d_image,
+        correct_answer, points, order_index)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        workshop_id, 
-        question, 
-        option_a_image || null, 
-        option_b_image || null, 
-        option_c_image || null, 
-        option_d_image || null, 
-        correct_answer, 
-        points || 1, 
+        workshop_id,
+        question,
+        question_image || null,
+        option_a_text || null,
+        option_b_text || null,
+        option_c_text || null,
+        option_d_text || null,
+        option_a_image || null,
+        option_b_image || null,
+        option_c_image || null,
+        option_d_image || null,
+        correct_answer,
+        points || 1,
         order_index || 0
       ]
     );
@@ -91,10 +111,9 @@ router.post('/', auth, authorize('admin'), async (req, res) => {
         id: result.insertId,
         workshop_id,
         question,
-        option_a_image,
-        option_b_image,
-        option_c_image,
-        option_d_image,
+        question_image: question_image || null,
+        option_a_text, option_b_text, option_c_text, option_d_text,
+        option_a_image, option_b_image, option_c_image, option_d_image,
         correct_answer,
         points: points || 1,
         order_index: order_index || 0
@@ -118,15 +137,20 @@ router.post('/', auth, authorize('admin'), async (req, res) => {
 router.put('/:id', auth, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { 
-      question, 
-      option_a_image, 
-      option_b_image, 
-      option_c_image, 
-      option_d_image, 
-      correct_answer, 
-      points, 
-      order_index 
+    const {
+      question,
+      question_image,
+      option_a_text,
+      option_b_text,
+      option_c_text,
+      option_d_text,
+      option_a_image,
+      option_b_image,
+      option_c_image,
+      option_d_image,
+      correct_answer,
+      points,
+      order_index
     } = req.body;
 
     if (!question || !correct_answer) {
@@ -138,19 +162,26 @@ router.put('/:id', auth, authorize('admin'), async (req, res) => {
     }
 
     const [result] = await pool.execute(
-      `UPDATE workshop_questions 
-       SET question = ?, option_a_image = ?, option_b_image = ?, option_c_image = ?, option_d_image = ?, 
-           correct_answer = ?, points = ?, order_index = ? 
+      `UPDATE workshop_questions
+       SET question = ?, question_image = ?,
+           option_a_text = ?, option_b_text = ?, option_c_text = ?, option_d_text = ?,
+           option_a_image = ?, option_b_image = ?, option_c_image = ?, option_d_image = ?,
+           correct_answer = ?, points = ?, order_index = ?
        WHERE id = ?`,
       [
-        question, 
-        option_a_image || null, 
-        option_b_image || null, 
-        option_c_image || null, 
-        option_d_image || null, 
-        correct_answer, 
-        points || 1, 
-        order_index || 0, 
+        question,
+        question_image || null,
+        option_a_text || null,
+        option_b_text || null,
+        option_c_text || null,
+        option_d_text || null,
+        option_a_image || null,
+        option_b_image || null,
+        option_c_image || null,
+        option_d_image || null,
+        correct_answer,
+        points || 1,
+        order_index || 0,
         id
       ]
     );
