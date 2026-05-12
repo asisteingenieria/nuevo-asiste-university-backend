@@ -50,7 +50,7 @@ router.get('/activity/:activityId', auth, async (req, res) => {
     );
 
     // Add questions to each quiz for admin users
-    if (req.user.role === 'admin') {
+    if (req.user.role === 'admin' || req.user.role === 'formador') {
       for (let quiz of rows) {
         const [questionRows] = await pool.execute(
           'SELECT * FROM quiz_questions WHERE quiz_id = ? ORDER BY order_index ASC',
@@ -137,7 +137,7 @@ router.get('/:id', auth, async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.post('/', auth, authorize('admin'), async (req, res) => {
+router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { title, description, activity_id, passing_score, questions } = req.body;
 
@@ -277,7 +277,7 @@ router.post('/:id/submit', auth, authorize('estudiante'), async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.put('/:id', auth, authorize('admin'), async (req, res) => {
+router.put('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, passing_score, questions } = req.body;
@@ -327,7 +327,7 @@ router.put('/:id', auth, authorize('admin'), async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/:id', auth, authorize('admin'), async (req, res) => {
+router.delete('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
 

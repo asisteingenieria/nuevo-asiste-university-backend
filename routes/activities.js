@@ -125,7 +125,7 @@ router.get('/:id', auth, async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.post('/', auth, authorize('admin'), async (req, res) => {
+router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { title, description, course_id, order_index } = req.body;
 
@@ -163,7 +163,7 @@ router.post('/', auth, authorize('admin'), async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.put('/:id', auth, authorize('admin'), async (req, res) => {
+router.put('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, order_index } = req.body;
@@ -242,7 +242,7 @@ router.post('/:id/complete', auth, authorize('estudiante'), async (req, res) => 
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/:id', auth, authorize('admin'), async (req, res) => {
+router.delete('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
 
