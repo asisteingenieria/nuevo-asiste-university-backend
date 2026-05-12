@@ -131,10 +131,19 @@ router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
       [title, description || '', req.user.id]
     );
 
+    const courseId = result.insertId;
+
+    if (req.user.role === 'formador') {
+      await pool.execute(
+        'INSERT INTO formador_courses (formador_id, course_id, assigned_by) VALUES (?, ?, ?)',
+        [req.user.id, courseId, req.user.id]
+      );
+    }
+
     res.status(201).json({
       message: 'Course created successfully',
       course: {
-        id: result.insertId,
+        id: courseId,
         title,
         description,
         created_by: req.user.id
