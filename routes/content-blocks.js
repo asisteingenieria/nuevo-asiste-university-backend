@@ -38,7 +38,7 @@ router.get('/activity/:activityId', auth, async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.post('/', auth, authorize('admin'), async (req, res) => {
+router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { activity_id, block_type, content_text, content_url, order_index } = req.body;
 
@@ -89,7 +89,7 @@ router.post('/', auth, authorize('admin'), async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.put('/:id', auth, authorize('admin'), async (req, res) => {
+router.put('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
     const { block_type, content_text, content_url, order_index } = req.body;
@@ -123,7 +123,7 @@ router.put('/:id', auth, authorize('admin'), async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.delete('/:id', auth, authorize('admin'), async (req, res) => {
+router.delete('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
 
