@@ -38,15 +38,22 @@ router.get('/activity/:activityId', auth, async (req, res) => {
     }
 
     const [rows] = await pool.execute(
-      `SELECT q.*, 
+      `SELECT q.*,
               MAX(g.percentage) as best_score,
-              COUNT(g.id) as attempts
+              COUNT(g.id) as attempts,
+              CASE WHEN grg.student_id IS NOT NULL THEN 1 ELSE 0 END as has_grant,
+              CASE
+                WHEN COUNT(g.id) = 0 THEN 0
+                WHEN grg.student_id IS NOT NULL AND q.max_attempts >= 2 AND COUNT(g.id) < 2 THEN 0
+                ELSE 1
+              END as is_completed
        FROM quizzes q
        LEFT JOIN grades g ON q.id = g.quiz_id AND g.student_id = ?
+       LEFT JOIN quiz_retake_grants grg ON q.id = grg.quiz_id AND grg.student_id = ?
        WHERE q.activity_id = ?
-       GROUP BY q.id
+       GROUP BY q.id, grg.student_id
        ORDER BY q.id ASC`,
-      [req.user.id, activityId]
+      [req.user.id, req.user.id, activityId]
     );
 
     // Add questions to each quiz for admin users
@@ -84,7 +91,12 @@ router.get('/:id', auth, async (req, res) => {
     const [quizRows] = await pool.execute(
       `SELECT q.*, a.course_id,
               COALESCE(gi.attempt_count, 0) as attempt_number,
-              CASE WHEN COALESCE(gi.attempt_count, 0) >= q.max_attempts THEN 1 ELSE 0 END as is_completed,
+              CASE WHEN grg.student_id IS NOT NULL AND q.max_attempts >= 2 THEN 2 ELSE q.max_attempts END as effective_max_attempts,
+              CASE
+                WHEN grg.student_id IS NOT NULL AND q.max_attempts >= 2
+                  THEN CASE WHEN COALESCE(gi.attempt_count, 0) >= 2 THEN 1 ELSE 0 END
+                ELSE CASE WHEN COALESCE(gi.attempt_count, 0) >= q.max_attempts THEN 1 ELSE 0 END
+              END as is_completed,
               gi.best_score as completed_score,
               gi.best_max_score as completed_max_score
        FROM quizzes q
@@ -98,8 +110,9 @@ router.get('/:id', auth, async (req, res) => {
          WHERE student_id = ?
          GROUP BY quiz_id
        ) gi ON q.id = gi.quiz_id
+       LEFT JOIN quiz_retake_grants grg ON q.id = grg.quiz_id AND grg.student_id = ?
        WHERE q.id = ?`,
-      [studentId, id]
+      [studentId, studentId, id]
     );
 
     if (quizRows.length === 0) {
@@ -107,6 +120,11 @@ router.get('/:id', auth, async (req, res) => {
     }
 
     const quiz = quizRows[0];
+
+    // For students, use the grant-aware effective_max_attempts so the frontend shows retry correctly
+    if (req.user.role === 'estudiante') {
+      quiz.max_attempts = quiz.effective_max_attempts;
+    }
 
     if (req.user.role === 'estudiante') {
       const [assignmentRows] = await pool.execute(

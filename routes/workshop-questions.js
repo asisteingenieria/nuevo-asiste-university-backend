@@ -286,17 +286,33 @@ router.post('/:workshopId/submit', auth, authorize('estudiante'), async (req, re
 
     const percentage = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
 
-    // Check if student has already completed this workshop
+    // Check attempt limits
     const [existingGrades] = await pool.execute(
       'SELECT id FROM workshop_grades WHERE student_id = ? AND workshop_id = ?',
       [req.user.id, workshopId]
     );
 
     if (existingGrades.length > 0) {
-      return res.status(400).json({ message: 'Ya has presentado este taller anteriormente. Solo se permite un intento.' });
+      const [workshopRows] = await pool.execute(
+        'SELECT COALESCE(max_attempts, 1) as max_attempts FROM workshops WHERE id = ?',
+        [workshopId]
+      );
+      const maxAttempts = workshopRows[0]?.max_attempts || 1;
+
+      if (maxAttempts >= 2) {
+        const [grantRows] = await pool.execute(
+          'SELECT id FROM workshop_retake_grants WHERE workshop_id = ? AND student_id = ?',
+          [workshopId, req.user.id]
+        );
+        if (grantRows.length === 0 || existingGrades.length >= maxAttempts) {
+          return res.status(400).json({ message: 'Ya has agotado los intentos disponibles para este taller.' });
+        }
+      } else {
+        return res.status(400).json({ message: 'Ya has presentado este taller anteriormente. Solo se permite un intento.' });
+      }
     }
 
-    const attemptNumber = 1; // Always first attempt since we block multiple attempts
+    const attemptNumber = existingGrades.length + 1;
 
     // Save grade
     await pool.execute(

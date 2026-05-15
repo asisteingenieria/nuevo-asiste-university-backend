@@ -37,17 +37,28 @@ router.get('/activity/:activityId', auth, async (req, res) => {
       }
     }
 
+    const studentId = req.user.role === 'estudiante' ? req.user.id : null;
     const [rows] = await pool.execute(
-      `SELECT w.*, COUNT(wq.id) as question_count,
-              CASE WHEN wg.id IS NOT NULL THEN 1 ELSE 0 END as is_completed,
-              wg.percentage as completed_score
-       FROM workshops w 
-       LEFT JOIN workshop_questions wq ON w.id = wq.workshop_id 
-       LEFT JOIN workshop_grades wg ON w.id = wg.workshop_id AND wg.student_id = ?
-       WHERE w.activity_id = ? 
-       GROUP BY w.id, wg.id, wg.percentage
+      `SELECT w.*, COUNT(DISTINCT wq.id) as question_count,
+              CASE WHEN wrg.student_id IS NOT NULL THEN 1 ELSE 0 END as has_grant,
+              COALESCE(g.attempt_count, 0) as attempt_count,
+              g.best_score as completed_score,
+              CASE
+                WHEN COALESCE(g.attempt_count, 0) = 0 THEN 0
+                WHEN wrg.student_id IS NOT NULL AND COALESCE(w.max_attempts, 1) >= 2 AND COALESCE(g.attempt_count, 0) < 2 THEN 0
+                ELSE 1
+              END as is_completed
+       FROM workshops w
+       LEFT JOIN workshop_questions wq ON w.id = wq.workshop_id
+       LEFT JOIN workshop_retake_grants wrg ON w.id = wrg.workshop_id AND wrg.student_id = ?
+       LEFT JOIN (
+         SELECT workshop_id, COUNT(*) as attempt_count, MAX(percentage) as best_score
+         FROM workshop_grades WHERE student_id = ? GROUP BY workshop_id
+       ) g ON g.workshop_id = w.id
+       WHERE w.activity_id = ?
+       GROUP BY w.id, wrg.student_id, g.attempt_count, g.best_score
        ORDER BY w.order_index ASC`,
-      [req.user.role === 'estudiante' ? req.user.id : null, activityId]
+      [studentId, studentId, activityId]
     );
 
     res.json({ workshops: rows });
@@ -70,15 +81,26 @@ router.get('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
 
+    const studentId = req.user.role === 'estudiante' ? req.user.id : null;
     const [workshopRows] = await pool.execute(
       `SELECT w.*, a.course_id,
-              CASE WHEN wg.id IS NOT NULL THEN 1 ELSE 0 END as is_completed,
-              wg.percentage as completed_score
-       FROM workshops w 
-       JOIN activities a ON w.activity_id = a.id 
-       LEFT JOIN workshop_grades wg ON w.id = wg.workshop_id AND wg.student_id = ?
+              CASE WHEN wrg.student_id IS NOT NULL THEN 1 ELSE 0 END as has_grant,
+              COALESCE(g.attempt_count, 0) as attempt_count,
+              g.best_score as completed_score,
+              CASE
+                WHEN COALESCE(g.attempt_count, 0) = 0 THEN 0
+                WHEN wrg.student_id IS NOT NULL AND COALESCE(w.max_attempts, 1) >= 2 AND COALESCE(g.attempt_count, 0) < 2 THEN 0
+                ELSE 1
+              END as is_completed
+       FROM workshops w
+       JOIN activities a ON w.activity_id = a.id
+       LEFT JOIN workshop_retake_grants wrg ON w.id = wrg.workshop_id AND wrg.student_id = ?
+       LEFT JOIN (
+         SELECT workshop_id, COUNT(*) as attempt_count, MAX(percentage) as best_score
+         FROM workshop_grades WHERE student_id = ? GROUP BY workshop_id
+       ) g ON g.workshop_id = w.id
        WHERE w.id = ?`,
-      [req.user.role === 'estudiante' ? req.user.id : null, id]
+      [studentId, studentId, id]
     );
 
     if (workshopRows.length === 0) {
@@ -130,9 +152,10 @@ router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
       return res.status(400).json({ message: 'Title and activity_id are required' });
     }
 
+    const { max_attempts } = req.body;
     const [result] = await pool.execute(
-      'INSERT INTO workshops (title, description, activity_id, order_index) VALUES (?, ?, ?, ?)',
-      [title, description || '', activity_id, order_index || 0]
+      'INSERT INTO workshops (title, description, activity_id, order_index, max_attempts) VALUES (?, ?, ?, ?, ?)',
+      [title, description || '', activity_id, order_index || 0, max_attempts || 1]
     );
 
     res.status(201).json({
@@ -163,15 +186,15 @@ router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
 router.put('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, order_index } = req.body;
+    const { title, description, order_index, max_attempts } = req.body;
 
     if (!title) {
       return res.status(400).json({ message: 'Title is required' });
     }
 
     const [result] = await pool.execute(
-      'UPDATE workshops SET title = ?, description = ?, order_index = ? WHERE id = ?',
-      [title, description || '', order_index || 0, id]
+      'UPDATE workshops SET title = ?, description = ?, order_index = ?, max_attempts = ? WHERE id = ?',
+      [title, description || '', order_index || 0, max_attempts || 1, id]
     );
 
     if (result.affectedRows === 0) {
