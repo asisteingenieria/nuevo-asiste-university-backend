@@ -63,7 +63,6 @@ router.post('/quiz', auth, async (req, res) => {
     }
 
     const quiz = quizRows[0];
-    const maxAttempts = quiz.max_attempts || 1;
 
     // Count existing attempts for this student/quiz
     const [existingGrades] = await pool.execute(
@@ -73,9 +72,17 @@ router.post('/quiz', auth, async (req, res) => {
 
     const attemptCount = existingGrades[0].attempt_count || 0;
 
-    if (attemptCount >= maxAttempts) {
+    // Check if student has a retake grant (grants a 2nd attempt when quiz allows it)
+    const [grantRows] = await pool.execute(
+      'SELECT id FROM quiz_retake_grants WHERE quiz_id = ? AND student_id = ?',
+      [quiz_id, student_id]
+    );
+    const hasGrant = grantRows.length > 0;
+    const effectiveMax = (hasGrant && quiz.max_attempts >= 2) ? 2 : (quiz.max_attempts || 1);
+
+    if (attemptCount >= effectiveMax) {
       return res.status(400).json({
-        message: `Ya has agotado los ${maxAttempts} intento(s) permitido(s) para este quiz.`
+        message: `Ya has agotado los ${effectiveMax} intento(s) permitido(s) para este quiz.`
       });
     }
 
@@ -143,6 +150,29 @@ router.post('/workshop', auth, async (req, res) => {
       'SELECT COUNT(*) as attempt_count, MAX(attempt_number) as max_attempt FROM workshop_grades WHERE student_id = ? AND workshop_id = ?',
       [student_id, workshop_id]
     );
+
+    const attemptCount = existingGrades[0].attempt_count || 0;
+
+    // Check attempt limits
+    if (attemptCount > 0) {
+      const [workshopRows] = await pool.execute(
+        'SELECT COALESCE(max_attempts, 1) as max_attempts FROM workshops WHERE id = ?',
+        [workshop_id]
+      );
+      const maxAttempts = workshopRows[0]?.max_attempts || 1;
+
+      if (maxAttempts >= 2) {
+        const [grantRows] = await pool.execute(
+          'SELECT id FROM workshop_retake_grants WHERE workshop_id = ? AND student_id = ?',
+          [workshop_id, student_id]
+        );
+        if (grantRows.length === 0 || attemptCount >= maxAttempts) {
+          return res.status(400).json({ message: 'Ya has agotado los intentos disponibles para este taller.' });
+        }
+      } else {
+        return res.status(400).json({ message: 'Ya has presentado este taller anteriormente. Solo se permite un intento.' });
+      }
+    }
 
     const attemptNumber = (existingGrades[0].max_attempt || 0) + 1;
 

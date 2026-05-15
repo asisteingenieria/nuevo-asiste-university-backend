@@ -255,6 +255,20 @@ const createTables = async () => {
     `);
 
     await promisePool.execute(`
+      CREATE TABLE IF NOT EXISTS quiz_retake_grants (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        quiz_id INT NOT NULL,
+        student_id INT NOT NULL,
+        granted_by INT NOT NULL,
+        granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (quiz_id) REFERENCES quizzes(id) ON DELETE CASCADE,
+        FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (granted_by) REFERENCES users(id) ON DELETE CASCADE,
+        UNIQUE KEY unique_grant (quiz_id, student_id)
+      )
+    `);
+
+    await promisePool.execute(`
       CREATE TABLE IF NOT EXISTS general_satisfaction_surveys (
         id INT AUTO_INCREMENT PRIMARY KEY,
         student_id INT NOT NULL,
