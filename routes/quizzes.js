@@ -79,16 +79,27 @@ router.get('/activity/:activityId', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const { id } = req.params;
+    const studentId = req.user.role === 'estudiante' ? req.user.id : null;
 
     const [quizRows] = await pool.execute(
       `SELECT q.*, a.course_id,
-              CASE WHEN g.id IS NOT NULL THEN 1 ELSE 0 END as is_completed,
-              g.percentage as completed_score
-       FROM quizzes q 
-       JOIN activities a ON q.activity_id = a.id 
-       LEFT JOIN grades g ON q.id = g.quiz_id AND g.student_id = ?
+              COALESCE(gi.attempt_count, 0) as attempt_number,
+              CASE WHEN COALESCE(gi.attempt_count, 0) >= q.max_attempts THEN 1 ELSE 0 END as is_completed,
+              gi.best_score as completed_score,
+              gi.best_max_score as completed_max_score
+       FROM quizzes q
+       JOIN activities a ON q.activity_id = a.id
+       LEFT JOIN (
+         SELECT quiz_id,
+                COUNT(*) as attempt_count,
+                MAX(percentage) as best_score,
+                MAX(max_score) as best_max_score
+         FROM grades
+         WHERE student_id = ?
+         GROUP BY quiz_id
+       ) gi ON q.id = gi.quiz_id
        WHERE q.id = ?`,
-      [req.user.role === 'estudiante' ? req.user.id : null, id]
+      [studentId, id]
     );
 
     if (quizRows.length === 0) {
@@ -113,12 +124,6 @@ router.get('/:id', auth, async (req, res) => {
       [id]
     );
 
-    if (req.user.role === 'estudiante') {
-      questionRows.forEach(question => {
-        delete question.correct_answer;
-      });
-    }
-
     quiz.questions = questionRows;
 
     res.json({ quiz });
@@ -139,15 +144,15 @@ router.get('/:id', auth, async (req, res) => {
  */
 router.post('/', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
-    const { title, description, activity_id, passing_score, questions } = req.body;
+    const { title, description, activity_id, passing_score, max_attempts, questions } = req.body;
 
     if (!title || !activity_id) {
       return res.status(400).json({ message: 'Title and activity_id are required' });
     }
 
     const [result] = await pool.execute(
-      'INSERT INTO quizzes (title, description, activity_id, passing_score, total_questions) VALUES (?, ?, ?, ?, ?)',
-      [title, description || '', activity_id, passing_score || 70, questions ? questions.length : 0]
+      'INSERT INTO quizzes (title, description, activity_id, passing_score, max_attempts, total_questions) VALUES (?, ?, ?, ?, ?, ?)',
+      [title, description || '', activity_id, passing_score || 70, max_attempts || 1, questions ? questions.length : 0]
     );
 
     const quizId = result.insertId;
@@ -280,7 +285,7 @@ router.post('/:id/submit', auth, authorize('estudiante'), async (req, res) => {
 router.put('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, passing_score, questions } = req.body;
+    const { title, description, passing_score, max_attempts, questions } = req.body;
 
     if (!title) {
       return res.status(400).json({ message: 'Title is required' });
@@ -288,8 +293,8 @@ router.put('/:id', auth, authorize('admin', 'formador'), async (req, res) => {
 
     // Update quiz basic info
     const [result] = await pool.execute(
-      'UPDATE quizzes SET title = ?, description = ?, passing_score = ?, total_questions = ? WHERE id = ?',
-      [title, description || '', passing_score || 70, questions ? questions.length : 0, id]
+      'UPDATE quizzes SET title = ?, description = ?, passing_score = ?, max_attempts = ?, total_questions = ? WHERE id = ?',
+      [title, description || '', passing_score || 70, max_attempts || 1, questions ? questions.length : 0, id]
     );
 
     if (result.affectedRows === 0) {

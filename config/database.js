@@ -121,10 +121,16 @@ const createTables = async () => {
         activity_id INT NOT NULL,
         total_questions INT DEFAULT 0,
         passing_score INT DEFAULT 70,
+        max_attempts INT DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE CASCADE
       )
+    `);
+
+    // Add max_attempts column to existing quizzes table if it doesn't exist
+    await promisePool.execute(`
+      ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS max_attempts INT DEFAULT 1
     `);
 
     await promisePool.execute(`
@@ -190,11 +196,17 @@ const createTables = async () => {
         score DECIMAL(5,2) NOT NULL,
         max_score DECIMAL(5,2) NOT NULL,
         percentage DECIMAL(5,2) NOT NULL,
+        student_answers JSON,
         attempt_number INT DEFAULT 1,
         completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (workshop_id) REFERENCES workshops(id) ON DELETE CASCADE
       )
+    `);
+
+    // Add student_answers column to existing workshop_grades table if it doesn't exist
+    await promisePool.execute(`
+      ALTER TABLE workshop_grades ADD COLUMN IF NOT EXISTS student_answers JSON
     `);
 
     await promisePool.execute(`

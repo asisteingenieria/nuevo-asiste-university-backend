@@ -45,31 +45,74 @@ router.get('/my-grades', auth, authorize('estudiante'), async (req, res) => {
  */
 router.post('/quiz', auth, async (req, res) => {
   try {
-    const { student_id, quiz_id, score, max_score, percentage, answers } = req.body;
+    const { student_id, quiz_id, answers } = req.body;
 
     // Check if student is submitting their own grade or if admin/formador
     if (req.user.role === 'estudiante' && req.user.id != student_id) {
       return res.status(403).json({ message: 'You can only submit your own grades' });
     }
 
-    // Get current attempt number
+    // Get quiz info including max_attempts
+    const [quizRows] = await pool.execute(
+      'SELECT id, max_attempts FROM quizzes WHERE id = ?',
+      [quiz_id]
+    );
+
+    if (quizRows.length === 0) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
+
+    const quiz = quizRows[0];
+    const maxAttempts = quiz.max_attempts || 1;
+
+    // Count existing attempts for this student/quiz
     const [existingGrades] = await pool.execute(
-      'SELECT MAX(attempt_number) as max_attempt FROM grades WHERE student_id = ? AND quiz_id = ?',
+      'SELECT COUNT(*) as attempt_count, MAX(attempt_number) as max_attempt FROM grades WHERE student_id = ? AND quiz_id = ?',
       [student_id, quiz_id]
     );
-    
-    const attemptNumber = (existingGrades[0].max_attempt || 0) + 1;
 
-    const [result] = await pool.execute(
-      `INSERT INTO grades (student_id, quiz_id, score, max_score, percentage, attempt_number) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [student_id, quiz_id, score, max_score, percentage, attemptNumber]
+    const attemptCount = existingGrades[0].attempt_count || 0;
+
+    if (attemptCount >= maxAttempts) {
+      return res.status(400).json({
+        message: `Ya has agotado los ${maxAttempts} intento(s) permitido(s) para este quiz.`
+      });
+    }
+
+    const attemptNumber = attemptCount + 1;
+
+    // Recalculate score server-side using stored correct_answers
+    const [questionRows] = await pool.execute(
+      'SELECT id, correct_answer, points FROM quiz_questions WHERE quiz_id = ?',
+      [quiz_id]
     );
 
-    res.status(201).json({ 
+    let correctAnswers = 0;
+    let totalPoints = 0;
+
+    questionRows.forEach(question => {
+      totalPoints += question.points;
+      const studentAnswer = answers ? answers[question.id] : undefined;
+      if (studentAnswer !== undefined && Number(studentAnswer) === Number(question.correct_answer)) {
+        correctAnswers += question.points;
+      }
+    });
+
+    const percentage = totalPoints > 0 ? Math.round((correctAnswers / totalPoints) * 100) : 0;
+
+    const [result] = await pool.execute(
+      `INSERT INTO grades (student_id, quiz_id, score, max_score, percentage, attempt_number, student_answers)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [student_id, quiz_id, correctAnswers, totalPoints, percentage, attemptNumber, JSON.stringify(answers || {})]
+    );
+
+    res.status(201).json({
       message: 'Grade submitted successfully',
       gradeId: result.insertId,
-      attemptNumber 
+      score: correctAnswers,
+      max_score: totalPoints,
+      percentage,
+      attemptNumber
     });
   } catch (error) {
     console.error('Submit quiz grade error:', error);
@@ -88,31 +131,53 @@ router.post('/quiz', auth, async (req, res) => {
  */
 router.post('/workshop', auth, async (req, res) => {
   try {
-    const { student_id, workshop_id, score, max_score, percentage, answers } = req.body;
+    const { student_id, workshop_id, answers } = req.body;
 
     // Check if student is submitting their own grade or if admin/formador
     if (req.user.role === 'estudiante' && req.user.id != student_id) {
       return res.status(403).json({ message: 'You can only submit your own grades' });
     }
 
-    // Get current attempt number
+    // Count existing attempts
     const [existingGrades] = await pool.execute(
-      'SELECT MAX(attempt_number) as max_attempt FROM workshop_grades WHERE student_id = ? AND workshop_id = ?',
+      'SELECT COUNT(*) as attempt_count, MAX(attempt_number) as max_attempt FROM workshop_grades WHERE student_id = ? AND workshop_id = ?',
       [student_id, workshop_id]
     );
-    
+
     const attemptNumber = (existingGrades[0].max_attempt || 0) + 1;
 
-    const [result] = await pool.execute(
-      `INSERT INTO workshop_grades (student_id, workshop_id, score, max_score, percentage, attempt_number) 
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [student_id, workshop_id, score, max_score, percentage, attemptNumber]
+    // Recalculate score server-side using stored correct_answers
+    const [questionRows] = await pool.execute(
+      'SELECT id, correct_answer, points FROM workshop_questions WHERE workshop_id = ?',
+      [workshop_id]
     );
 
-    res.status(201).json({ 
+    let correctAnswers = 0;
+    let totalPoints = 0;
+
+    questionRows.forEach(question => {
+      totalPoints += question.points;
+      const studentAnswer = answers ? answers[question.id] : undefined;
+      if (studentAnswer !== undefined && studentAnswer === question.correct_answer) {
+        correctAnswers += question.points;
+      }
+    });
+
+    const percentage = totalPoints > 0 ? Math.round((correctAnswers / totalPoints) * 100) : 0;
+
+    const [result] = await pool.execute(
+      `INSERT INTO workshop_grades (student_id, workshop_id, score, max_score, percentage, attempt_number, student_answers)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [student_id, workshop_id, correctAnswers, totalPoints, percentage, attemptNumber, JSON.stringify(answers || {})]
+    );
+
+    res.status(201).json({
       message: 'Workshop grade submitted successfully',
       gradeId: result.insertId,
-      attemptNumber 
+      score: correctAnswers,
+      max_score: totalPoints,
+      percentage,
+      attemptNumber
     });
   } catch (error) {
     console.error('Submit workshop grade error:', error);
@@ -713,6 +778,57 @@ router.get('/overall-stats', auth, authorize('admin'), async (req, res) => {
     });
   } catch (error) {
     console.error('Get overall stats error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * DELETE /api/grades/quiz/:quizId/all
+ * Resets grades for ALL students for a specific quiz (admin/formador only)
+ */
+router.delete('/quiz/:quizId/all', auth, authorize('admin', 'formador'), async (req, res) => {
+  try {
+    const { quizId } = req.params;
+
+    const [result] = await pool.execute(
+      'DELETE FROM grades WHERE quiz_id = ?',
+      [quizId]
+    );
+
+    res.json({
+      message: `Calificaciones reseteadas para todos los estudiantes. Pueden volver a presentar el quiz.`,
+      deletedAttempts: result.affectedRows
+    });
+  } catch (error) {
+    console.error('Reset all quiz grades error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * DELETE /api/grades/quiz/student/:studentId/quiz/:quizId
+ * Resets all quiz grades for a student (admin/formador only)
+ * Allows the student to retake the quiz with corrected scoring
+ */
+router.delete('/quiz/student/:studentId/quiz/:quizId', auth, authorize('admin', 'formador'), async (req, res) => {
+  try {
+    const { studentId, quizId } = req.params;
+
+    const [result] = await pool.execute(
+      'DELETE FROM grades WHERE student_id = ? AND quiz_id = ?',
+      [studentId, quizId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'No se encontraron calificaciones para resetear' });
+    }
+
+    res.json({
+      message: `Calificaciones reseteadas exitosamente. El estudiante puede volver a presentar el quiz.`,
+      deletedAttempts: result.affectedRows
+    });
+  } catch (error) {
+    console.error('Reset quiz grade error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
