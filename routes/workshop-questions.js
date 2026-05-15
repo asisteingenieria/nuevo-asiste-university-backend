@@ -22,6 +22,11 @@ router.get('/workshop/:workshopId', auth, async (req, res) => {
       [workshopId]
     );
 
+    // Hide correct_answer from students to prevent cheating
+    if (req.user.role === 'estudiante') {
+      rows.forEach(q => delete q.correct_answer);
+    }
+
     res.json({ questions: rows });
   } catch (error) {
     console.error('Get workshop questions error:', error);
