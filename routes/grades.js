@@ -260,9 +260,9 @@ router.get('/student/:studentId', auth, authorize('admin', 'formador', 'estudian
       [studentId]
     );
 
-    // Get workshop grades
+    // Get workshop grades - only best attempt per workshop per student
     const [workshopGrades] = await pool.execute(
-      `SELECT wg.id, wg.student_id, wg.workshop_id as quiz_id, wg.score, wg.max_score, 
+      `SELECT wg.id, wg.student_id, wg.workshop_id as quiz_id, wg.score, wg.max_score,
               wg.percentage, wg.attempt_number, wg.completed_at,
               w.title as quiz_title, a.title as activity_title, c.title as course_title,
               70 as passing_score, u.name as student_name, u.email as student_email,
@@ -273,6 +273,12 @@ router.get('/student/:studentId', auth, authorize('admin', 'formador', 'estudian
        JOIN courses c ON a.course_id = c.id
        JOIN users u ON wg.student_id = u.id
        WHERE wg.student_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM workshop_grades wg2
+           WHERE wg2.workshop_id = wg.workshop_id
+             AND wg2.student_id = wg.student_id
+             AND (wg2.percentage > wg.percentage OR (wg2.percentage = wg.percentage AND wg2.id > wg.id))
+         )
        ORDER BY wg.completed_at DESC`,
       [studentId]
     );
@@ -313,9 +319,9 @@ router.get('/all', auth, authorize('admin', 'formador'), async (req, res) => {
        ORDER BY g.completed_at DESC`
     );
 
-    // Get workshop grades
+    // Get workshop grades - only best attempt per workshop per student
     const [workshopGrades] = await pool.execute(
-      `SELECT wg.id, wg.student_id, wg.workshop_id as quiz_id, wg.score, wg.max_score, 
+      `SELECT wg.id, wg.student_id, wg.workshop_id as quiz_id, wg.score, wg.max_score,
               wg.percentage, wg.attempt_number, wg.completed_at,
               w.title as quiz_title, a.title as activity_title, c.title as course_title,
               70 as passing_score, u.name as student_name, u.email as student_email,
@@ -325,6 +331,12 @@ router.get('/all', auth, authorize('admin', 'formador'), async (req, res) => {
        JOIN activities a ON w.activity_id = a.id
        JOIN courses c ON a.course_id = c.id
        JOIN users u ON wg.student_id = u.id
+       WHERE NOT EXISTS (
+         SELECT 1 FROM workshop_grades wg2
+         WHERE wg2.workshop_id = wg.workshop_id
+           AND wg2.student_id = wg.student_id
+           AND (wg2.percentage > wg.percentage OR (wg2.percentage = wg.percentage AND wg2.id > wg.id))
+       )
        ORDER BY wg.completed_at DESC`
     );
 
@@ -515,7 +527,16 @@ router.get('/my-courses-progress', auth, authorize('estudiante'), async (req, re
        LEFT JOIN quizzes q ON a.id = q.activity_id
        LEFT JOIN grades g ON q.id = g.quiz_id AND g.student_id = ?
        LEFT JOIN workshops w ON a.id = w.activity_id
-       LEFT JOIN workshop_grades wg ON w.id = wg.workshop_id AND wg.student_id = ?
+       LEFT JOIN (
+         SELECT wg1.id, wg1.workshop_id, wg1.student_id, wg1.percentage
+         FROM workshop_grades wg1
+         WHERE NOT EXISTS (
+           SELECT 1 FROM workshop_grades wg2
+           WHERE wg2.workshop_id = wg1.workshop_id
+             AND wg2.student_id = wg1.student_id
+             AND (wg2.percentage > wg1.percentage OR (wg2.percentage = wg1.percentage AND wg2.id > wg1.id))
+         )
+       ) wg ON w.id = wg.workshop_id AND wg.student_id = ?
        WHERE ca.student_id = ?
        GROUP BY c.id, c.title, c.description
        ORDER BY c.title`,
@@ -606,13 +627,19 @@ router.get('/course/:courseId/details', auth, authorize('estudiante'), async (re
       [courseId, req.user.id]
     );
 
-    // Get workshop grades for this course
+    // Get workshop grades for this course - only best attempt per workshop
     const [workshopGrades] = await pool.execute(
       `SELECT wg.*, w.title as workshop_title, a.id as activity_id, a.title as activity_title
        FROM workshop_grades wg
        JOIN workshops w ON wg.workshop_id = w.id
        JOIN activities a ON w.activity_id = a.id
        WHERE a.course_id = ? AND wg.student_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM workshop_grades wg2
+           WHERE wg2.workshop_id = wg.workshop_id
+             AND wg2.student_id = wg.student_id
+             AND (wg2.percentage > wg.percentage OR (wg2.percentage = wg.percentage AND wg2.id > wg.id))
+         )
        ORDER BY wg.completed_at DESC`,
       [courseId, req.user.id]
     );
