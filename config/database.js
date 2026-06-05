@@ -204,6 +204,11 @@ const createTables = async () => {
       )
     `);
 
+    // Add student_answers column to grades table (quiz answers) if it doesn't exist
+    await promisePool.execute(`
+      ALTER TABLE grades ADD COLUMN IF NOT EXISTS student_answers JSON
+    `);
+
     // Add student_answers column to existing workshop_grades table if it doesn't exist
     await promisePool.execute(`
       ALTER TABLE workshop_grades ADD COLUMN IF NOT EXISTS student_answers JSON
