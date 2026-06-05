@@ -322,7 +322,7 @@ router.get('/all', auth, authorize('admin', 'formador'), async (req, res) => {
     // Get workshop grades - only best attempt per workshop per student
     const [workshopGrades] = await pool.execute(
       `SELECT wg.id, wg.student_id, wg.workshop_id as quiz_id, wg.score, wg.max_score,
-              wg.percentage, wg.attempt_number, wg.completed_at,
+              wg.percentage, wg.attempt_number, wg.completed_at, wg.student_answers,
               w.title as quiz_title, a.title as activity_title, c.title as course_title,
               70 as passing_score, u.name as student_name, u.email as student_email,
               'workshop' as grade_type
@@ -341,7 +341,7 @@ router.get('/all', auth, authorize('admin', 'formador'), async (req, res) => {
     );
 
     // Combine both types of grades
-    const allGrades = [...quizGrades, ...workshopGrades].sort((a, b) => 
+    const allGrades = [...quizGrades, ...workshopGrades].sort((a, b) =>
       new Date(b.completed_at) - new Date(a.completed_at)
     );
 
@@ -616,31 +616,25 @@ router.get('/course/:courseId/details', auth, authorize('estudiante'), async (re
       [req.user.id, courseId]
     );
 
-    // Get quiz grades for this course
+    // Get all quiz attempts for this course
     const [quizGrades] = await pool.execute(
       `SELECT g.*, q.title as quiz_title, q.passing_score, a.id as activity_id, a.title as activity_title
        FROM grades g
        JOIN quizzes q ON g.quiz_id = q.id
        JOIN activities a ON q.activity_id = a.id
        WHERE a.course_id = ? AND g.student_id = ?
-       ORDER BY g.completed_at DESC`,
+       ORDER BY g.quiz_id ASC, g.attempt_number ASC`,
       [courseId, req.user.id]
     );
 
-    // Get workshop grades for this course - only best attempt per workshop
+    // Get all workshop attempts for this course
     const [workshopGrades] = await pool.execute(
       `SELECT wg.*, w.title as workshop_title, a.id as activity_id, a.title as activity_title
        FROM workshop_grades wg
        JOIN workshops w ON wg.workshop_id = w.id
        JOIN activities a ON w.activity_id = a.id
        WHERE a.course_id = ? AND wg.student_id = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM workshop_grades wg2
-           WHERE wg2.workshop_id = wg.workshop_id
-             AND wg2.student_id = wg.student_id
-             AND (wg2.percentage > wg.percentage OR (wg2.percentage = wg.percentage AND wg2.id > wg.id))
-         )
-       ORDER BY wg.completed_at DESC`,
+       ORDER BY wg.workshop_id ASC, wg.attempt_number ASC`,
       [courseId, req.user.id]
     );
 
@@ -886,6 +880,148 @@ router.delete('/quiz/student/:studentId/quiz/:quizId', auth, authorize('admin', 
     });
   } catch (error) {
     console.error('Reset quiz grade error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/grades/quiz-detail/:gradeId
+ * Returns per-question breakdown of a quiz grade for the authenticated student
+ */
+router.get('/quiz-detail/:gradeId', auth, authorize('estudiante'), async (req, res) => {
+  try {
+    const { gradeId } = req.params;
+
+    const [gradeRows] = await pool.execute(
+      `SELECT g.id, g.quiz_id, g.score, g.max_score, g.percentage, g.attempt_number,
+              g.completed_at, g.student_answers, q.title as quiz_title, q.passing_score
+       FROM grades g
+       JOIN quizzes q ON g.quiz_id = q.id
+       WHERE g.id = ? AND g.student_id = ?`,
+      [gradeId, req.user.id]
+    );
+
+    if (gradeRows.length === 0) {
+      return res.status(404).json({ message: 'Grade not found' });
+    }
+
+    const grade = gradeRows[0];
+    const rawAnswers = grade.student_answers;
+    const studentAnswers = rawAnswers && typeof rawAnswers === 'object'
+      ? rawAnswers
+      : (() => { try { return JSON.parse(rawAnswers || '{}'); } catch { return {}; } })();
+
+    const [questions] = await pool.execute(
+      `SELECT id, question, options, correct_answer, points, order_index
+       FROM quiz_questions WHERE quiz_id = ? ORDER BY order_index ASC`,
+      [grade.quiz_id]
+    );
+
+    const questionsWithResults = questions.map(q => {
+      const options = Array.isArray(q.options)
+        ? q.options
+        : (() => { try { return JSON.parse(q.options || '[]'); } catch { return []; } })();
+      const studentAnswer = studentAnswers[q.id] !== undefined ? Number(studentAnswers[q.id]) : null;
+      const correctAnswer = Number(q.correct_answer);
+      return {
+        id: q.id,
+        question: q.question,
+        options,
+        correct_answer: correctAnswer,
+        student_answer: studentAnswer,
+        is_correct: studentAnswer !== null && studentAnswer === correctAnswer,
+        points: q.points
+      };
+    });
+
+    res.json({
+      grade: {
+        id: grade.id,
+        quiz_title: grade.quiz_title,
+        score: grade.score,
+        max_score: grade.max_score,
+        percentage: grade.percentage,
+        attempt_number: grade.attempt_number,
+        passing_score: grade.passing_score,
+        completed_at: grade.completed_at
+      },
+      questions: questionsWithResults
+    });
+  } catch (error) {
+    console.error('Get quiz detail error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/grades/workshop-detail/:gradeId
+ * Returns per-question breakdown of a workshop grade for the authenticated student
+ */
+router.get('/workshop-detail/:gradeId', auth, authorize('estudiante'), async (req, res) => {
+  try {
+    const { gradeId } = req.params;
+
+    const [gradeRows] = await pool.execute(
+      `SELECT wg.id, wg.workshop_id, wg.score, wg.max_score, wg.percentage, wg.attempt_number,
+              wg.completed_at, wg.student_answers, w.title as workshop_title
+       FROM workshop_grades wg
+       JOIN workshops w ON wg.workshop_id = w.id
+       WHERE wg.id = ? AND wg.student_id = ?`,
+      [gradeId, req.user.id]
+    );
+
+    if (gradeRows.length === 0) {
+      return res.status(404).json({ message: 'Workshop grade not found' });
+    }
+
+    const grade = gradeRows[0];
+    const rawAnswers = grade.student_answers;
+    const studentAnswers = rawAnswers && typeof rawAnswers === 'object'
+      ? rawAnswers
+      : (() => { try { return JSON.parse(rawAnswers || '{}'); } catch { return {}; } })();
+
+    const [questions] = await pool.execute(
+      `SELECT id, question, question_image,
+              option_a_text, option_b_text, option_c_text, option_d_text,
+              option_a_image, option_b_image, option_c_image, option_d_image,
+              correct_answer, points, order_index
+       FROM workshop_questions WHERE workshop_id = ? ORDER BY order_index ASC`,
+      [grade.workshop_id]
+    );
+
+    const questionsWithResults = questions.map(q => {
+      const studentAnswer = studentAnswers[q.id] !== undefined ? String(studentAnswers[q.id]) : null;
+      return {
+        id: q.id,
+        question: q.question,
+        question_image: q.question_image || null,
+        options: {
+          A: { text: q.option_a_text, image: q.option_a_image },
+          B: { text: q.option_b_text, image: q.option_b_image },
+          C: { text: q.option_c_text, image: q.option_c_image },
+          D: { text: q.option_d_text, image: q.option_d_image }
+        },
+        correct_answer: q.correct_answer,
+        student_answer: studentAnswer,
+        is_correct: studentAnswer !== null && studentAnswer === q.correct_answer,
+        points: q.points
+      };
+    });
+
+    res.json({
+      grade: {
+        id: grade.id,
+        workshop_title: grade.workshop_title,
+        score: grade.score,
+        max_score: grade.max_score,
+        percentage: grade.percentage,
+        attempt_number: grade.attempt_number,
+        completed_at: grade.completed_at
+      },
+      questions: questionsWithResults
+    });
+  } catch (error) {
+    console.error('Get workshop detail error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
