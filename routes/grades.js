@@ -1056,6 +1056,149 @@ router.get('/workshop-detail/:gradeId', auth, authorize('admin', 'formador', 'es
 });
 
 /**
+ * POST /api/grades/workshop/:workshopId/recalculate
+ * Recalculates all grades for a workshop using the current correct answers.
+ * Useful after the admin corrects wrong correct_answer values.
+ */
+router.post('/workshop/:workshopId/recalculate', auth, authorize('admin', 'formador'), async (req, res) => {
+  try {
+    const { workshopId } = req.params;
+
+    const [questions] = await pool.execute(
+      'SELECT id, correct_answer, points FROM workshop_questions WHERE workshop_id = ?',
+      [workshopId]
+    );
+
+    if (questions.length === 0) {
+      return res.status(404).json({ message: 'No se encontraron preguntas para este taller' });
+    }
+
+    const [grades] = await pool.execute(
+      'SELECT id, student_answers FROM workshop_grades WHERE workshop_id = ?',
+      [workshopId]
+    );
+
+    let updatedCount = 0;
+    let skippedCount = 0;
+
+    for (const grade of grades) {
+      const rawAnswers = grade.student_answers;
+      const studentAnswers = rawAnswers && typeof rawAnswers === 'object'
+        ? rawAnswers
+        : (() => { try { return JSON.parse(rawAnswers || '{}'); } catch { return {}; } })();
+
+      if (!studentAnswers || Object.keys(studentAnswers).length === 0) {
+        skippedCount++;
+        continue;
+      }
+
+      let correctAnswers = 0;
+      let totalPoints = 0;
+
+      questions.forEach(question => {
+        totalPoints += question.points;
+        const rawSA = studentAnswers[question.id];
+        const studentAnswer = rawSA !== undefined && rawSA !== null
+          ? String(rawSA).trim().toUpperCase()
+          : undefined;
+        const correctAnswer = question.correct_answer
+          ? String(question.correct_answer).trim().toUpperCase()
+          : null;
+        if (studentAnswer !== undefined && correctAnswer !== null && studentAnswer === correctAnswer) {
+          correctAnswers += question.points;
+        }
+      });
+
+      const percentage = totalPoints > 0 ? Math.round((correctAnswers / totalPoints) * 100) : 0;
+
+      await pool.execute(
+        'UPDATE workshop_grades SET score = ?, max_score = ?, percentage = ? WHERE id = ?',
+        [correctAnswers, totalPoints, percentage, grade.id]
+      );
+      updatedCount++;
+    }
+
+    res.json({
+      message: `Recálculo completado: ${updatedCount} calificación(es) actualizada(s)${skippedCount > 0 ? `, ${skippedCount} omitida(s) por no tener respuestas guardadas` : ''}`,
+      updatedCount,
+      skippedCount
+    });
+  } catch (error) {
+    console.error('Recalculate workshop grades error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/grades/quiz/:quizId/recalculate
+ * Recalculates all grades for a quiz using the current correct answers.
+ */
+router.post('/quiz/:quizId/recalculate', auth, authorize('admin', 'formador'), async (req, res) => {
+  try {
+    const { quizId } = req.params;
+
+    const [questions] = await pool.execute(
+      'SELECT id, correct_answer, points FROM quiz_questions WHERE quiz_id = ?',
+      [quizId]
+    );
+
+    if (questions.length === 0) {
+      return res.status(404).json({ message: 'No se encontraron preguntas para este quiz' });
+    }
+
+    const [grades] = await pool.execute(
+      'SELECT id, student_answers FROM grades WHERE quiz_id = ?',
+      [quizId]
+    );
+
+    let updatedCount = 0;
+    let skippedCount = 0;
+
+    for (const grade of grades) {
+      const rawAnswers = grade.student_answers;
+      const studentAnswers = rawAnswers && typeof rawAnswers === 'object'
+        ? rawAnswers
+        : (() => { try { return JSON.parse(rawAnswers || '{}'); } catch { return {}; } })();
+
+      if (!studentAnswers || Object.keys(studentAnswers).length === 0) {
+        skippedCount++;
+        continue;
+      }
+
+      let correctAnswers = 0;
+      let totalPoints = 0;
+
+      questions.forEach(question => {
+        totalPoints += question.points;
+        const rawSA = studentAnswers[question.id];
+        const studentAnswer = rawSA !== undefined && rawSA !== null ? Number(rawSA) : null;
+        const correctAnswer = Number(question.correct_answer);
+        if (studentAnswer !== null && !isNaN(studentAnswer) && studentAnswer === correctAnswer) {
+          correctAnswers += question.points;
+        }
+      });
+
+      const percentage = totalPoints > 0 ? Math.round((correctAnswers / totalPoints) * 100) : 0;
+
+      await pool.execute(
+        'UPDATE grades SET score = ?, max_score = ?, percentage = ? WHERE id = ?',
+        [correctAnswers, totalPoints, percentage, grade.id]
+      );
+      updatedCount++;
+    }
+
+    res.json({
+      message: `Recálculo completado: ${updatedCount} calificación(es) actualizada(s)${skippedCount > 0 ? `, ${skippedCount} omitida(s) por no tener respuestas guardadas` : ''}`,
+      updatedCount,
+      skippedCount
+    });
+  } catch (error) {
+    console.error('Recalculate quiz grades error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
  * GET /api/grades/workshop/:workshopId/responses
  * Returns all students' answers for a workshop with per-question correct/incorrect breakdown.
  * Only accessible by admin and formador.
