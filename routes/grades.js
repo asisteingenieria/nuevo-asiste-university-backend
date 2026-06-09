@@ -187,8 +187,14 @@ router.post('/workshop', auth, async (req, res) => {
 
     questionRows.forEach(question => {
       totalPoints += question.points;
-      const studentAnswer = answers ? answers[question.id] : undefined;
-      if (studentAnswer !== undefined && studentAnswer === question.correct_answer) {
+      const rawStudentAnswer = answers ? answers[question.id] : undefined;
+      const studentAnswer = rawStudentAnswer !== undefined && rawStudentAnswer !== null
+        ? String(rawStudentAnswer).trim().toUpperCase()
+        : undefined;
+      const correctAnswer = question.correct_answer
+        ? String(question.correct_answer).trim().toUpperCase()
+        : null;
+      if (studentAnswer !== undefined && correctAnswer !== null && studentAnswer === correctAnswer) {
         correctAnswers += question.points;
       }
     });
@@ -888,18 +894,26 @@ router.delete('/quiz/student/:studentId/quiz/:quizId', auth, authorize('admin', 
  * GET /api/grades/quiz-detail/:gradeId
  * Returns per-question breakdown of a quiz grade for the authenticated student
  */
-router.get('/quiz-detail/:gradeId', auth, authorize('estudiante'), async (req, res) => {
+router.get('/quiz-detail/:gradeId', auth, authorize('admin', 'formador', 'estudiante'), async (req, res) => {
   try {
     const { gradeId } = req.params;
 
-    const [gradeRows] = await pool.execute(
-      `SELECT g.id, g.quiz_id, g.score, g.max_score, g.percentage, g.attempt_number,
-              g.completed_at, g.student_answers, q.title as quiz_title, q.passing_score
+    let query = `SELECT g.id, g.quiz_id, g.score, g.max_score, g.percentage, g.attempt_number,
+              g.completed_at, g.student_answers, g.student_id,
+              q.title as quiz_title, q.passing_score,
+              u.name as student_name
        FROM grades g
        JOIN quizzes q ON g.quiz_id = q.id
-       WHERE g.id = ? AND g.student_id = ?`,
-      [gradeId, req.user.id]
-    );
+       JOIN users u ON g.student_id = u.id
+       WHERE g.id = ?`;
+    const params = [gradeId];
+
+    if (req.user.role === 'estudiante') {
+      query += ' AND g.student_id = ?';
+      params.push(req.user.id);
+    }
+
+    const [gradeRows] = await pool.execute(query, params);
 
     if (gradeRows.length === 0) {
       return res.status(404).json({ message: 'Grade not found' });
@@ -957,18 +971,26 @@ router.get('/quiz-detail/:gradeId', auth, authorize('estudiante'), async (req, r
  * GET /api/grades/workshop-detail/:gradeId
  * Returns per-question breakdown of a workshop grade for the authenticated student
  */
-router.get('/workshop-detail/:gradeId', auth, authorize('estudiante'), async (req, res) => {
+router.get('/workshop-detail/:gradeId', auth, authorize('admin', 'formador', 'estudiante'), async (req, res) => {
   try {
     const { gradeId } = req.params;
 
-    const [gradeRows] = await pool.execute(
-      `SELECT wg.id, wg.workshop_id, wg.score, wg.max_score, wg.percentage, wg.attempt_number,
-              wg.completed_at, wg.student_answers, w.title as workshop_title
+    let query = `SELECT wg.id, wg.workshop_id, wg.score, wg.max_score, wg.percentage, wg.attempt_number,
+              wg.completed_at, wg.student_answers, wg.student_id,
+              w.title as workshop_title,
+              u.name as student_name
        FROM workshop_grades wg
        JOIN workshops w ON wg.workshop_id = w.id
-       WHERE wg.id = ? AND wg.student_id = ?`,
-      [gradeId, req.user.id]
-    );
+       JOIN users u ON wg.student_id = u.id
+       WHERE wg.id = ?`;
+    const params = [gradeId];
+
+    if (req.user.role === 'estudiante') {
+      query += ' AND wg.student_id = ?';
+      params.push(req.user.id);
+    }
+
+    const [gradeRows] = await pool.execute(query, params);
 
     if (gradeRows.length === 0) {
       return res.status(404).json({ message: 'Workshop grade not found' });
@@ -990,7 +1012,13 @@ router.get('/workshop-detail/:gradeId', auth, authorize('estudiante'), async (re
     );
 
     const questionsWithResults = questions.map(q => {
-      const studentAnswer = studentAnswers[q.id] !== undefined ? String(studentAnswers[q.id]) : null;
+      const rawSA = studentAnswers[q.id];
+      const studentAnswer = rawSA !== undefined && rawSA !== null
+        ? String(rawSA).trim().toUpperCase()
+        : null;
+      const correctAnswer = q.correct_answer
+        ? String(q.correct_answer).trim().toUpperCase()
+        : null;
       return {
         id: q.id,
         question: q.question,
@@ -1001,9 +1029,9 @@ router.get('/workshop-detail/:gradeId', auth, authorize('estudiante'), async (re
           C: { text: q.option_c_text, image: q.option_c_image },
           D: { text: q.option_d_text, image: q.option_d_image }
         },
-        correct_answer: q.correct_answer,
+        correct_answer: correctAnswer,
         student_answer: studentAnswer,
-        is_correct: studentAnswer !== null && studentAnswer === q.correct_answer,
+        is_correct: studentAnswer !== null && correctAnswer !== null && studentAnswer === correctAnswer,
         points: q.points
       };
     });
@@ -1012,6 +1040,7 @@ router.get('/workshop-detail/:gradeId', auth, authorize('estudiante'), async (re
       grade: {
         id: grade.id,
         workshop_title: grade.workshop_title,
+        student_name: grade.student_name,
         score: grade.score,
         max_score: grade.max_score,
         percentage: grade.percentage,
@@ -1022,6 +1051,199 @@ router.get('/workshop-detail/:gradeId', auth, authorize('estudiante'), async (re
     });
   } catch (error) {
     console.error('Get workshop detail error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/grades/workshop/:workshopId/responses
+ * Returns all students' answers for a workshop with per-question correct/incorrect breakdown.
+ * Only accessible by admin and formador.
+ */
+router.get('/workshop/:workshopId/responses', auth, authorize('admin', 'formador'), async (req, res) => {
+  try {
+    const { workshopId } = req.params;
+
+    const [questions] = await pool.execute(
+      `SELECT id, question, question_image,
+              option_a_text, option_b_text, option_c_text, option_d_text,
+              option_a_image, option_b_image, option_c_image, option_d_image,
+              correct_answer, points, order_index
+       FROM workshop_questions WHERE workshop_id = ? ORDER BY order_index ASC`,
+      [workshopId]
+    );
+
+    const [grades] = await pool.execute(
+      `SELECT wg.id as grade_id, wg.student_id, wg.score, wg.max_score, wg.percentage,
+              wg.attempt_number, wg.completed_at, wg.student_answers,
+              u.name as student_name, u.email as student_email
+       FROM workshop_grades wg
+       JOIN users u ON wg.student_id = u.id
+       WHERE wg.workshop_id = ?
+       ORDER BY u.name ASC, wg.attempt_number ASC`,
+      [workshopId]
+    );
+
+    const studentsMap = {};
+    for (const grade of grades) {
+      const sid = grade.student_id;
+      if (!studentsMap[sid]) {
+        studentsMap[sid] = {
+          student_id: sid,
+          student_name: grade.student_name,
+          student_email: grade.student_email,
+          attempts: []
+        };
+      }
+
+      const rawAnswers = grade.student_answers;
+      const studentAnswers = rawAnswers && typeof rawAnswers === 'object'
+        ? rawAnswers
+        : (() => { try { return JSON.parse(rawAnswers || '{}'); } catch { return {}; } })();
+
+      const questionsDetail = questions.map(q => {
+        const rawSA = studentAnswers[q.id];
+        const studentAnswer = rawSA !== undefined && rawSA !== null
+          ? String(rawSA).trim().toUpperCase()
+          : null;
+        const correctAnswer = q.correct_answer
+          ? String(q.correct_answer).trim().toUpperCase()
+          : null;
+        return {
+          question_id: q.id,
+          question: q.question,
+          question_image: q.question_image || null,
+          options: {
+            A: { text: q.option_a_text, image: q.option_a_image },
+            B: { text: q.option_b_text, image: q.option_b_image },
+            C: { text: q.option_c_text, image: q.option_c_image },
+            D: { text: q.option_d_text, image: q.option_d_image }
+          },
+          correct_answer: correctAnswer,
+          student_answer: studentAnswer,
+          is_correct: studentAnswer !== null && correctAnswer !== null && studentAnswer === correctAnswer,
+          points: q.points
+        };
+      });
+
+      studentsMap[sid].attempts.push({
+        grade_id: grade.grade_id,
+        attempt_number: grade.attempt_number,
+        score: grade.score,
+        max_score: grade.max_score,
+        percentage: grade.percentage,
+        completed_at: grade.completed_at,
+        questions: questionsDetail
+      });
+    }
+
+    res.json({
+      workshop_id: parseInt(workshopId),
+      questions: questions.map(q => ({
+        id: q.id,
+        question: q.question,
+        correct_answer: q.correct_answer,
+        points: q.points,
+        order_index: q.order_index
+      })),
+      students: Object.values(studentsMap)
+    });
+  } catch (error) {
+    console.error('Get workshop responses error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/grades/quiz/:quizId/responses
+ * Returns all students' answers for a quiz with per-question correct/incorrect breakdown.
+ * Only accessible by admin and formador.
+ */
+router.get('/quiz/:quizId/responses', auth, authorize('admin', 'formador'), async (req, res) => {
+  try {
+    const { quizId } = req.params;
+
+    const [questions] = await pool.execute(
+      `SELECT id, question, options, correct_answer, points, order_index
+       FROM quiz_questions WHERE quiz_id = ? ORDER BY order_index ASC`,
+      [quizId]
+    );
+
+    const parsedQuestions = questions.map(q => ({
+      ...q,
+      options: Array.isArray(q.options)
+        ? q.options
+        : (() => { try { return JSON.parse(q.options || '[]'); } catch { return []; } })()
+    }));
+
+    const [grades] = await pool.execute(
+      `SELECT g.id as grade_id, g.student_id, g.score, g.max_score, g.percentage,
+              g.attempt_number, g.completed_at, g.student_answers,
+              u.name as student_name, u.email as student_email
+       FROM grades g
+       JOIN users u ON g.student_id = u.id
+       WHERE g.quiz_id = ?
+       ORDER BY u.name ASC, g.attempt_number ASC`,
+      [quizId]
+    );
+
+    const studentsMap = {};
+    for (const grade of grades) {
+      const sid = grade.student_id;
+      if (!studentsMap[sid]) {
+        studentsMap[sid] = {
+          student_id: sid,
+          student_name: grade.student_name,
+          student_email: grade.student_email,
+          attempts: []
+        };
+      }
+
+      const rawAnswers = grade.student_answers;
+      const studentAnswers = rawAnswers && typeof rawAnswers === 'object'
+        ? rawAnswers
+        : (() => { try { return JSON.parse(rawAnswers || '{}'); } catch { return {}; } })();
+
+      const questionsDetail = parsedQuestions.map(q => {
+        const rawSA = studentAnswers[q.id];
+        const studentAnswerNum = rawSA !== undefined && rawSA !== null ? Number(rawSA) : null;
+        const correctAnswerNum = Number(q.correct_answer);
+        return {
+          question_id: q.id,
+          question: q.question,
+          options: q.options,
+          correct_answer: correctAnswerNum,
+          student_answer: studentAnswerNum,
+          is_correct: studentAnswerNum !== null && !isNaN(studentAnswerNum) && studentAnswerNum === correctAnswerNum,
+          points: q.points
+        };
+      });
+
+      studentsMap[sid].attempts.push({
+        grade_id: grade.grade_id,
+        attempt_number: grade.attempt_number,
+        score: grade.score,
+        max_score: grade.max_score,
+        percentage: grade.percentage,
+        completed_at: grade.completed_at,
+        questions: questionsDetail
+      });
+    }
+
+    res.json({
+      quiz_id: parseInt(quizId),
+      questions: parsedQuestions.map(q => ({
+        id: q.id,
+        question: q.question,
+        options: q.options,
+        correct_answer: Number(q.correct_answer),
+        points: q.points,
+        order_index: q.order_index
+      })),
+      students: Object.values(studentsMap)
+    });
+  } catch (error) {
+    console.error('Get quiz responses error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
